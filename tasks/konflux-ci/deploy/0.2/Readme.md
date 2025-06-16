@@ -1,6 +1,6 @@
 # 🚀 Tekton Task: `deploy-konflux-ci`
 
-Version: 0.1
+Version: 0.2
 
 This task automates the deployment of [Konflux CI](https://github.com/konflux-ci/konflux-ci) into a Kubernetes or OpenShift environment.
 It is tailored for use within OpenShift Pipelines (Tekton) and supports full setup, including dependencies, policies, and test resources.
@@ -12,12 +12,12 @@ It is tailored for use within OpenShift Pipelines (Tekton) and supports full set
 The task performs the following operations:
 
 1. Clones the Konflux CI Git repository.
-1. Solves PR pairing between Konflux CI components (if required)
 1. Checks out the specified branch.
 1. Retrieves a `kubeconfig` from a Kubernetes Secret to access a target cluster.
 1. Optionally modifies kustomization files if specific component overrides are provided.
 1. Executes the deployment sequence using `deploy-deps.sh`, `wait-for-all.sh`, and `deploy-konflux.sh`.
 1. Optionally deploys test resources using `deploy-test-resources.sh`.
+1. Stores logs in specified OCI artifact
 
 ---
 
@@ -35,6 +35,8 @@ The task performs the following operations:
 | `component-pr-owner`      | GitHub owner (user/org) of the fork/PR providing custom Kubernetes manifests for the `component-name`.                                    | `''`                                           | ❌       |
 | `component-pr-sha`        | Commit SHA of the PR (from `component-pr-owner`) supplying custom Kubernetes manifests for the `component-name`.                            | `''`                                           | ❌       |
 | `component-pr-source-branch`        | GitHub source branch of the pull request.     | `''`    | ❌       |
+| `oci-ref`                     | Full OCI artifact reference used for storing logs from the Task's Steps    | -        | ✅       |
+| `oci-credentials`             | The secret name containing credentials for container registry where the artifacts will be stored.  | -    | ✅       |
 
 ---
 
@@ -62,8 +64,6 @@ These parameters are particularly useful for development and testing of individu
 
 1. **`clone-konflux-ci`**
     Clones the Konflux CI repository and checks out the specified branch.
-1. **`solve-pr-pairing`**
-    Performs PR pairing between Konflux components if required
 1. **`update-kustomization`** *(conditional)*
     If `component-name` is provided, this step modifies the kustomization files to use custom images or manifest sources for the specified component.
 1. **`get-kubeconfig`**
@@ -72,7 +72,10 @@ These parameters are particularly useful for development and testing of individu
     Runs main deployment scripts (`deploy-deps.sh`, `wait-for-all.sh`, `deploy-konflux.sh`).
 1. **`create-test-resources`** *(conditional)*
     Deploys additional test resources if `create-test-resources` is set to `true`.
-
+1. **`secure-push-oci`**
+    Stores logs from deploying konflux in OCI artifact
+1. **`fail-if-any-step-failed`**
+    If any of the previous steps fail, this step fails
 ---
 
 ## 🔐 Required Secret Format

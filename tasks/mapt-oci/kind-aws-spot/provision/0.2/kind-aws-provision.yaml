@@ -4,7 +4,7 @@ kind: Task
 metadata:
   name: kind-aws-provision
   labels:
-    app.kubernetes.io/version: "0.1"
+    app.kubernetes.io/version: "0.2"
   annotations:
     tekton.dev/pipelines.minVersion: "0.44.x"
     tekton.dev/categories: infrastructure
@@ -29,6 +29,11 @@ spec:
         secretName: $(params.secret-aws-credentials)
     - name: cluster-info
       emptyDir: {}
+    - name: logs
+      emptyDir: {}
+    - name: konflux-test-infra-volume
+      secret:
+        secretName: $(params.oci-credentials)
 
   params:
     - name: secret-aws-credentials
@@ -107,13 +112,30 @@ spec:
     - name: timeout
       description: Auto-destroy timeout
       default: "''"
+    - name: oci-ref
+      type: string
+      description: Full OCI artifact reference in a format "quay.io/org/repo:tag. It's used for storing logs from the Task's Steps
+    - name: oci-credentials
+      type: string
+      description: |
+        The secret name containing credentials for container registry where the artifacts will be stored.
+      default: "konflux-test-infra"
 
   results:
     - name: cluster-access-secret
       description: Secret with kubeconfig
 
+  stepTemplate:
+    env:
+      - name: LOG_FILENAME
+        value: '/var/log-dir/kind-aws-provision.log'
+    volumeMounts:
+      - name: logs
+        mountPath: /var/log-dir
+
   steps:
     - name: provisioner
+      onError: continue
       image: quay.io/redhat-developer/mapt:v0.9.2
       volumeMounts:
         - name: aws-credentials
@@ -144,7 +166,8 @@ spec:
         fi
         if [[ $(params.timeout) != "" ]]; then cmd+="--timeout $(params.timeout) "; fi
         cmd+="--tags $(params.tags) "
-        eval "${cmd}"
+
+        eval "${cmd}" 2>&1 | tee $LOG_FILENAME
 
       computeResources:
         requests:
@@ -155,6 +178,7 @@ spec:
           cpu: "300m"
 
     - name: host-info-secret
+      onError: continue
       image: registry.redhat.io/openshift4/ose-cli:4.13@sha256:e70eb2be867f1236b19f5cbfeb8e0625737ce0ec1369e32a4f9f146aaaf68d49
       env:
         - name: NAMESPACE
@@ -197,3 +221,30 @@ spec:
 
         NAME=$(oc create -f cluster-info.yaml -o=jsonpath='{.metadata.name}')
         echo -n "${NAME}" | tee $(results.cluster-access-secret.path)
+    - name: secure-push-oci
+      ref:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/konflux-ci/tekton-integration-catalog.git
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: stepactions/secure-push-oci/0.1/secure-push-oci.yaml
+      params:
+        - name: workdir-path
+          value: /var/log-dir
+        - name: oci-ref
+          value: $(params.oci-ref)
+        - name: credentials-volume-name
+          value: konflux-test-infra-volume
+    - name: fail-if-any-step-failed
+      ref:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/konflux-ci/tekton-integration-catalog.git
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: stepactions/fail-if-any-step-failed/0.1/fail-if-any-step-failed.yaml

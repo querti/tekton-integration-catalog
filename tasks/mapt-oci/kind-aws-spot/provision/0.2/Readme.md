@@ -1,7 +1,7 @@
 
 # 🚀 Tekton Task: `kind-aws-provision`
 
-**Version:** 0.1
+**Version:** 0.2
 
 Create a Kind (Kubernetes in Docker) cluster on AWS using the [Mapt CLI](https://github.com/redhat-developer/mapt).
 This task is ideal for managing **ephemeral clusters** in Tekton-based CI/CD workflows.
@@ -49,6 +49,8 @@ This task provisions a single-node Kubernetes cluster on AWS using Mapt. It outp
 | `tags`                        | AWS resource tags                                                           | `''`        | ❌       |
 | `debug`                       | Enable verbose output (prints credentials; use with caution)               | `false`     | ❌       |
 | `timeout`                     | Auto-destroy timeout (`1h`, `30m`, etc.)                                    | `''`        | ❌       |
+| `oci-ref`                     | Full OCI artifact reference used for storing logs from the Task's Steps    | -        | ✅       |
+| `oci-credentials`             | The secret name containing credentials for container registry where the artifacts will be stored.  | -    | ✅       |
 
 ---
 
