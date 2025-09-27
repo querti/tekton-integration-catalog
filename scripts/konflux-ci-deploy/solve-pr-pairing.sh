@@ -11,15 +11,25 @@ set -euo pipefail
 #
 # Required environment variables:
 #   - COMPONENT_NAME        (e.g. "release-service" or "release-service-catalog")
+#   - IMAGE_TAG             (related container image tag)
 #   - PR_SOURCE_BRANCH      (source branch of the PR to match)
 #   - PR_AUTHOR             (GitHub username of the PR author)
 #   - PR_SHA                (SHA of the current component PR)
 # -----------------------------------------------------------------------------------
 
 COMPONENT_NAME="${COMPONENT_NAME:-}"
+EVENT_TYPE="${EVENT_TYPE:-}"
 PR_SOURCE_BRANCH="${PR_SOURCE_BRANCH:-}"
 PR_AUTHOR="${PR_AUTHOR:-}"
 PR_SHA="${PR_SHA:-}"
+IMAGE_TAG="${IMAGE_TAG:-}"
+
+if [[ "$EVENT_TYPE" == "push" ]]; then
+  IMAGE_TAG="${IMAGE_TAG:=$PR_SHA}"
+  PR_AUTHOR="konflux-ci"
+else
+  IMAGE_TAG="${IMAGE_TAG:=on-pr-$PR_SHA}"
+fi
 
 RELEASE_SERVICE_REPO="konflux-ci/release-service"
 INFRA_DEPLOYMENTS_REPO="redhat-appstudio/infra-deployments"
@@ -69,13 +79,11 @@ if [[ "$COMPONENT_NAME" == "release-service-catalog" || "$COMPONENT_NAME" == "re
     else
       log "No paired PR found in $RELEASE_SERVICE_REPO by $PR_AUTHOR on branch $PR_SOURCE_BRANCH"
     fi
-
   elif [[ "$COMPONENT_NAME" == "release-service" ]]; then
-    log "Setting up env vars for 'release-service'"
-    write_env_file "on-pr-$PR_SHA" "$PR_SHA"
+    log "Setting up env vars for '$COMPONENT_NAME'"
+    write_env_file "$IMAGE_TAG" "$PR_SHA"
     cat "$ENV_FILE"
   fi
-
 
   log "Checking for paired PR in $INFRA_DEPLOYMENTS_REPO"
   PR_TO_PAIR=$(fetch_paired_pr_sha "$INFRA_DEPLOYMENTS_REPO")

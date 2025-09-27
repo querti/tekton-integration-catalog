@@ -59,6 +59,7 @@ spec:
       type: string
       description: |
         A name of the secret containing credentials for container registry where the artifacts will be stored.
+        The secret should contain `data.oci-storage-dockerconfigjson: <dockerconfigjson-content>`
     - name: build-credentials
       type: string
       description: |
@@ -113,10 +114,16 @@ spec:
       when:
         - input: "$(params.component-name)"
           operator: notin
-          values: [ "" ]
+          values: [""]
       env:
+        - name: EVENT_TYPE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.labels['pac.test.appstudio.openshift.io/event-type']
         - name: COMPONENT_NAME
           value: "$(params.component-name)"
+        - name: IMAGE_TAG
+          value: "$(params.component-image-tag)"
         - name: PR_SOURCE_BRANCH
           value: "$(params.component-pr-source-branch)"
         - name: PR_AUTHOR
@@ -138,7 +145,12 @@ spec:
       when:
         - input: "$(params.component-name)"
           operator: notin
-          values: [ "" ]
+          values: [""]
+      env:
+        - name: SOURCE_REPO_URL
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.annotations['pac.test.appstudio.openshift.io/source-repo-url']
       script: |
         #!/bin/bash
         set -euo pipefail
@@ -155,6 +167,15 @@ spec:
             IMAGE_TAG="$(params.component-image-tag)"
             PR_OWNER="$(params.component-pr-owner)"
             PR_SHA="$(params.component-pr-sha)"
+          fi
+
+          # Handles cases when PR is created from upstream repository branches (i.e. branches created by *[bot])
+          SOURCE_REPO_URL="${SOURCE_REPO_URL:-}"
+          SOURCE_REPO_OWNER="${PR_OWNER}"
+
+          if [[ -n "$SOURCE_REPO_URL" && "$SOURCE_REPO_URL" != *"/$SOURCE_REPO_OWNER/"* ]]; then
+            SOURCE_REPO_OWNER=$(echo "$SOURCE_REPO_URL" | sed -E 's|https://github.com/([^/]+)/.*|\1|')
+            echo "[INFO] SOURCE_REPO_OWNER updated to: $SOURCE_REPO_OWNER"
           fi
 
           # Repo names do not match the ones of the component. Try to find the right kustomization.yaml based on the component name.
@@ -177,10 +198,10 @@ spec:
             yq -i e "(.images.[] | select(.name==\"quay.io/konflux-ci/${COMPONENT_NAME}\")) |= .newTag=\"${IMAGE_TAG}\"" "$KUSTOMIZATION_PATH"
           fi
 
-          if [[ -n "$PR_OWNER" && -n "$PR_SHA" ]]; then
-            echo "[INFO] Updating GitHub reference to $PR_OWNER@$PR_SHA"
-            yq -i e "(.resources[] | select(. ==\"*github.com/konflux-ci/${COMPONENT_NAME}/config/default*\")) |= \"https://github.com/${PR_OWNER}/${COMPONENT_NAME}/config/default?ref=${PR_SHA}\"" "$KUSTOMIZATION_PATH"
-            yq -i e "(.resources[] | select(. ==\"*github.com/konflux-ci/${COMPONENT_NAME}/config/snapshotgc*\")) |= \"https://github.com/${PR_OWNER}/${COMPONENT_NAME}/config/snapshotgc?ref=${PR_SHA}\"" "$KUSTOMIZATION_PATH"
+          if [[ -n "$SOURCE_REPO_OWNER" && -n "$PR_SHA" ]]; then
+            echo "[INFO] Updating GitHub reference to $SOURCE_REPO_OWNER@$PR_SHA"
+            yq -i e "(.resources[] | select(. ==\"*github.com/konflux-ci/${COMPONENT_NAME}/config/default*\")) |= \"https://github.com/${SOURCE_REPO_OWNER}/${COMPONENT_NAME}/config/default?ref=${PR_SHA}\"" "$KUSTOMIZATION_PATH"
+            yq -i e "(.resources[] | select(. ==\"*github.com/konflux-ci/${COMPONENT_NAME}/config/snapshotgc*\")) |= \"https://github.com/${SOURCE_REPO_OWNER}/${COMPONENT_NAME}/config/snapshotgc?ref=${PR_SHA}\"" "$KUSTOMIZATION_PATH"
           fi
         } 2>&1 | tee -a $LOG_FILENAME
     - name: deploy-konflux-ci
@@ -190,8 +211,20 @@ spec:
       script: |
         #!/bin/bash
         set -euo pipefail
-        
+
         {
+          server=$(grep server $KUBECONFIG | awk '{print $2}')
+          echo "[INFO] kubernetes cluster is hosted on: $server"
+
+          server_ip=$(sed -e 's|.*/||' -e 's|:.*||' <<< $server)
+
+          sed -i "s|localhost|${server_ip}|g" dependencies/dex/config.yaml
+          sed -i "s|localhost|${server_ip}|g" dependencies/pipelines-as-code/custom-console-patch.yaml
+          sed -i "s|localhost|${server_ip}|g" konflux-ci/ui/core/proxy/proxy.yaml
+
+          sed -i "s|http://pipelines-as-code-controller.*:|http://${server_ip}:|g" konflux-ci/build-service/core/build-service-env-patch.yaml
+          sed -i "s|http://pipelines-as-code-controller.*:|http://${server_ip}:|g" dependencies/smee/smee-client.yaml
+
           kubectl cluster-info
 
           echo "[INFO] Installing Konflux CI dependencies"
@@ -200,6 +233,9 @@ spec:
 
           echo "[INFO] Installing Konflux CI..."
           ./deploy-konflux.sh
+
+          # Apply pipelines-runner cluster role
+          kubectl apply -f https://raw.githubusercontent.com/redhat-appstudio/infra-deployments/main/components/konflux-rbac/base/appstudio-pipelines-runner.yaml
 
           kubectl get po -A
         } 2>&1 | tee -a $LOG_FILENAME
@@ -210,7 +246,7 @@ spec:
       script: |
         #!/bin/bash
         set -euo pipefail
-        
+
         {
           echo "[INFO] Reading required secrets..."
           QUAY_ORG_NAME=$(< /build-credentials/quay-org-name)
@@ -226,7 +262,7 @@ spec:
           pac_namespaces=( pipelines-as-code build-service integration-service )
           echo "[INFO] Adding PaC secrets to $pac_namespaces..."
 
-          for ns in ${pac_namespaces[@]}; do 
+          for ns in ${pac_namespaces[@]}; do
               kubectl -n $ns create secret generic pipelines-as-code-secret \
                 --from-literal github-private-key="${GH_APP_PRIVATE_KEY}" \
                 --from-literal github-application-id="${GH_APP_ID}" \
@@ -243,6 +279,33 @@ spec:
 
           kubectl get po -A
         } 2>&1 | tee -a $LOG_FILENAME
+    - name: update-component-deployment-with-sealights-token
+      image: quay.io/konflux-ci/tekton-integration-catalog/utils:latest
+      workingDir: /var/workdir
+      when:
+        - input: "$(params.component-name)"
+          operator: notin
+          values: [""]
+      script: |
+        #!/bin/bash
+        set -euo pipefail
+
+        {
+          export COMPONENT_NAME="$(params.component-name)"
+          export SEALIGHTS_TOKEN=$(< /build-credentials/sealights-token)
+
+          konflux_components=( build-service image-controller integration-service release-service )
+
+          for konflux_component in "${konflux_components[@]}"; do
+            if [[ "$konflux_component" == "$COMPONENT_NAME" ]]; then
+              echo "[INFO] Adding env var SEALIGHTS_TOKEN to the deployment of '$konflux_component'"
+              deployment_name=$(kubectl get deployment -o name -n "$konflux_component")
+              kubectl -n "$konflux_component" set env "$deployment_name" SEALIGHTS_TOKEN="$SEALIGHTS_TOKEN" --containers="*"
+            fi
+          done
+
+          ./wait-for-all.sh
+        } 2>&1 | tee -a $LOG_FILENAME
     - name: create-test-resources
       image: quay.io/konflux-ci/tekton-integration-catalog/utils:latest
       onError: continue
@@ -256,9 +319,6 @@ spec:
         set -euo pipefail
 
         {
-        echo "[INFO] Applying Kyverno to reduce resources for testing"
-        kubectl apply -f ./dependencies/kyverno/policy/e2e-reduce-resources.yaml
-
         echo "[INFO] Creating Test Resources..."
         ./deploy-test-resources.sh
         } 2>&1 | tee -a $LOG_FILENAME

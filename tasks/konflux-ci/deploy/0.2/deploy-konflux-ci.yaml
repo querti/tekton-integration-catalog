@@ -59,6 +59,7 @@ spec:
       type: string
       description: |
         The secret name containing credentials for container registry where the artifacts will be stored.
+        The secret should contain `data.oci-storage-dockerconfigjson: <dockerconfigjson-content>`
       default: "konflux-test-infra"
 
   volumes:
@@ -105,7 +106,7 @@ spec:
       when:
         - input: "$(params.component-name)"
           operator: notin
-          values: [ "" ]
+          values: [""]
       env:
         - name: COMPONENT_NAME
           value: "$(params.component-name)"
@@ -130,7 +131,7 @@ spec:
       when:
         - input: "$(params.component-name)"
           operator: notin
-          values: [ "" ]
+          values: [""]
       script: |
         #!/bin/bash
         set -euo pipefail
@@ -183,7 +184,7 @@ spec:
       script: |
         #!/bin/bash
         set -euo pipefail
-        
+
         {
           kubectl cluster-info
 
